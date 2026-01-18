@@ -1,0 +1,17 @@
+# Rust build artifacts
+target/
+**/*.rs.bk
+
+# Generated WASM components
+components/
+
+# WASI Adapter (Downloaded by Makefile)
+wasi_snapshot_preview1.reactor.wasm
+
+# Environment variables
+.env
+
+# OS Files
+.DS_Store
+*.swp
+*~

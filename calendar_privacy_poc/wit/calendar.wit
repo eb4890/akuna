@@ -1,0 +1,93 @@
+package local:calendar-privacy;
+
+interface calendar-api {
+    // String alias to be explicit about format
+    type iso8601 = string;
+
+    record time-window {
+        start: iso8601,
+        end: iso8601,
+        is-free: bool,
+    }
+
+    // Enum to represent user state instead of raw strings
+    enum user-state {
+        tired,
+        busy,
+        energetic,
+        traveling,
+        unknown
+    }
+
+    get-free-slots: func() -> list<time-window>;
+    
+    record calendar-event {
+        title: string,
+        start: iso8601,
+        end: iso8601,
+        location: string,
+        description: string,
+    }
+    get-events-sensitive: func() -> list<calendar-event>;
+}
+
+interface search-api {
+    record search-result {
+        title: string,
+        url: string,
+        snippet: string,
+    }
+    // Still string, as queries are free-text, but we could wrap it
+    // type query-safe-string = string;
+    search: func(query: string) -> list<search-result>;
+}
+
+interface llm-api {
+    use calendar-api.{user-state};
+
+    // Returns a typed enum instead of an arbitrary string
+    predict-state: func(context: string) -> user-state;
+    
+    // Leaky agent still needs text
+    completion: func(prompt: string) -> string;
+}
+
+world capabilities {
+    import calendar-api;
+    import search-api;
+    import llm-api;
+}
+
+world calendar-reader-world {
+    export calendar-api;
+}
+
+world web-searcher-world {
+    export search-api;
+}
+
+world context-analyzer-world {
+    use calendar-api.{user-state, time-window};
+    import llm-api;
+    // Context analyzer receives structured time windows, returns typed state
+    export analyze: func(schedule: list<time-window>) -> user-state;
+}
+
+world matcher-world {
+    use calendar-api.{time-window};
+    use search-api.{search-result};
+    
+    // Matcher now takes typed inputs
+    export reconcile: func(
+        slots: list<time-window>, 
+        events: list<search-result>
+    ) -> list<search-result>; 
+}
+
+world leaky-agent-world {
+    import calendar-api;
+    import search-api;
+    import llm-api;
+    export run-agent: func(prompt: string) -> string;
+}
+
