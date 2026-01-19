@@ -1,0 +1,7 @@
+[components]
+agent = "agent.wasm"
+calendar = "calendar.wasm"
+
+[wiring]
+"agent.local:calendar/read" = "calendar.local:calendar/read"
+"calendar.wasi:filesystem/types" = "host.wasi:filesystem/types"

@@ -91,3 +91,16 @@ world leaky-agent-world {
     export run-agent: func(prompt: string) -> string;
 }
 
+world orchestrator-world {
+    import calendar-api;
+    import search-api;
+    import llm-api; 
+    // We import the generic APIs. The host will link these imports to the SPECIFIC components (CalendarReader, etc.)
+    
+    export run: func() -> string;
+}
+
+world llm-provider-world {
+    export llm-api;
+}
+

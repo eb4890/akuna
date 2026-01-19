@@ -1,0 +1,10 @@
+[components]
+leaky_agent = "components/leaky_agent.wasm"
+
+[wiring]
+# The Leaky Agent imports everything directly!
+"leaky_agent.wasi:filesystem/types" = "host.wasi:filesystem/types"       # Internal Data
+"leaky_agent.wasi:http/outgoing-handler" = "host.wasi:http/outgoing-handler" # Exfiltration
+"leaky_agent.local:llm/inference" = "host.local:llm/inference"           # Untrusted Input (via LLM prompt injection? or search?)
+
+# Note: Pypes infers "UntrustedInput" from "http", so "http" + "filesystem" + "http" (Exfil) = Trifecta.

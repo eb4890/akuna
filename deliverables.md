@@ -122,3 +122,39 @@ Since this is a POC without a GUI, we will implement the "Contract Acceptance" f
     *   **No**: The Host aborts immediately.
 
 This simulates the "Manifest Review" step described in the design document.
+
+## 7. Plumbing Layer
+
+- [x] Implementation Complete (Pypes CLI)
+
+To enable flexible composition of WASM components, we will implement a "Plumbing Layer" (or Wiring Mode).
+
+*   **Concept**: Instead of hardcoded Rust host logic (like in Section 4), the Host reads a declarative configuration (e.g., a TOML or JSON blueprint) that defines:
+    *   Which components to instantiate.
+    *   How their exports and imports are connected (the "pipes").
+*   **Goal**: Allow valid interactions (e.g., `Context Analyzer` -> `Calendar Reader`) while preventing invalid ones by simply not wiring them.
+
+## 8. Static Analysis of Plumbing Config
+
+- [x] Implementation Complete (Pypes Analyser)
+
+Before running a plumbing configuration, we will perform static analysis to ensure safety.
+
+*   **Vulnerability Detection**:
+    *   **Lethal Trifecta**: Detects paths that combine **Untrusted Content** (e.g., Web Search, Email) + **Internal Knowledge** (Calendar) + **Exfiltration** (Network Send).
+    *   **Deadly Duo**: Detects the combination of **Untrusted Content** + **Destructive Updates** (e.g., Delete Event, Send Email).
+*   **Mechanism**: A graph analysis tool that builds a dependency graph of the components and their capabilities. It traverses the graph to find dangerous paths before execution.
+
+## 9. AI Agent Capability Contract Mode (Offline)
+
+- [x] Implementation Complete
+
+A mode that bridges the gap between natural language requests and secure execution.
+
+1.  **Request**: User enters a request (e.g., "Find a time for lunch with Bob").
+2.  **Contract Creation**: An **Offline AI Agent** (running locally, NO web search capability) analyzes the request and generates a **Capability Contract** (the Plumbing Config from Section 7).
+    *   *Example*: "I need the Calendar Reader and the Matcher, but I do not need Web Search or Delete capabilities."
+3.  **Verification**: The tool from Section 8 runs static analysis on this generated contract.
+    *   If it detects a "Deadly Duo" or "Lethal Trifecta", it rejects the contract.
+4.  **Execution**: If verified safe, the Host instantiates the components according to the AI-generated contract and executes the task.
+

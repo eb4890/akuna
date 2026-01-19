@@ -1,0 +1,26 @@
+[components]
+calendar_reader = "components/calendar_reader.wasm"
+web_searcher = "components/web_searcher.wasm"
+context_analyzer = "components/context_analyzer.wasm"
+matcher = "components/matcher.wasm"
+orchestrator = "components/orchestrator.wasm"
+llm_provider = "components/llm_provider.wasm"
+
+[wiring]
+# Orchestrator Dependencies
+"orchestrator.local:calendar-privacy/calendar-api" = "calendar_reader.local:calendar-privacy/calendar-api"
+"orchestrator.local:calendar-privacy/search-api" = "web_searcher.local:calendar-privacy/search-api"
+"orchestrator.local:calendar-privacy/llm-api" = "llm_provider.local:calendar-privacy/llm-api"
+
+# Calendar Reader Access
+"calendar_reader.wasi:filesystem/types" = "host.wasi:filesystem/types"
+
+# Web Searcher Access
+"web_searcher.wasi:http/outgoing-handler" = "host.wasi:http/outgoing-handler"
+
+# Analyzer Access
+"context_analyzer.local:calendar-privacy/llm-api" = "llm_provider.local:calendar-privacy/llm-api"
+
+# Note: In the POC simulation, the "Wiring" is actually data flow in the host main loop.
+# But for Pypes analysis, we declare the *capabilities* each component *receives*.
+# The safe design is that NO COMPONENT receives both "filesystem" AND "http".

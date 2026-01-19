@@ -1,0 +1,13 @@
+[components]
+agent = "agent.wasm"
+calendar = "calendar.wasm"
+search = "search.wasm"
+
+[wiring]
+# Internal access
+"agent.local:calendar/read" = "calendar.local:calendar/read"
+"calendar.wasi:filesystem/types" = "host.wasi:filesystem/types"
+
+# Exfiltration access
+"agent.local:search/query" = "search.local:search/query"
+"search.wasi:http/outgoing-handler" = "host.wasi:http/outgoing-handler"

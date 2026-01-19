@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "pypes",
+    "pypes_analyser",
+    "contract_agent"
+]
+resolver = "2"

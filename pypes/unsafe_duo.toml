@@ -1,0 +1,11 @@
+[components]
+agent = "agent.wasm"
+search = "search.wasm"
+
+[wiring]
+# Untrusted Source
+"agent.local:search/query" = "search.local:search/query"
+"search.wasi:http/outgoing-handler" = "host.wasi:http/outgoing-handler" 
+
+# Destructive Update
+"agent.local:calendar/delete" = "host.local:calendar/delete"

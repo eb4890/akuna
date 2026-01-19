@@ -1,0 +1,15 @@
+[components]
+leaky_agent = "components/leaky_agent.wasm"
+calendar = "components/calendar_reader.wasm"
+search = "components/web_searcher.wasm"
+llm = "components/llm_provider.wasm"
+
+[wiring]
+# Leaky Agent Imports (Satisfied by helper components)
+"leaky_agent.local:calendar-privacy/calendar-api" = "calendar.local:calendar-privacy/calendar-api"
+"leaky_agent.local:calendar-privacy/search-api" = "search.local:calendar-privacy/search-api"
+"leaky_agent.local:calendar-privacy/llm-api" = "llm.local:calendar-privacy/llm-api"
+
+# Helper Inputs (The sources of danger)
+"calendar.wasi:filesystem/types" = "host.wasi:filesystem/types"
+"search.wasi:http/outgoing-handler" = "host.wasi:http/outgoing-handler"

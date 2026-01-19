@@ -6,5 +6,7 @@ members = [
     "modules/context_analyzer",
     "modules/matcher",
     "modules/leaky_agent",
+    "modules/orchestrator",
+    "modules/llm_provider",
 ]
 resolver = "2"
