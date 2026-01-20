@@ -7,11 +7,11 @@ COMPONENTS_DIR = components
 ADAPTER = wasi_snapshot_preview1.reactor.wasm
 ADAPTER_URL = https://github.com/bytecodealliance/wasmtime/releases/download/v18.0.0/$(ADAPTER)
 
-# Modules list
-MODULES = calendar_reader web_searcher context_analyzer matcher leaky_agent
+# Modules list (orchestrator, context_analyzer, matcher removed - replaced by declarative workflow)
+MODULES = calendar_reader web_searcher leaky_agent llm_provider
 
 # Default target
-all: build-modules components build-host
+all: build-modules components
 
 # 1. Build WASM Modules
 build-modules:
@@ -19,9 +19,8 @@ build-modules:
 	cargo build --target $(WASM_TARGET) \
 		-p calendar_reader \
 		-p web_searcher \
-		-p context_analyzer \
-		-p matcher \
-		-p leaky_agent
+		-p leaky_agent \
+		-p llm_provider
 
 # 2. Download Adapter
 $(ADAPTER):
@@ -37,27 +36,11 @@ components: build-modules $(ADAPTER)
 		wasm-tools component new $(BUILD_DIR)/$$mod.wasm -o $(COMPONENTS_DIR)/$$mod.wasm --adapt ./$(ADAPTER) || \
 		echo "Warning: Could not componentize $$mod. Ensure wasm-tools is installed."; \
 	done
-	@# Note: The above tries lib<name>.so first because cargo often outputs cdylib/libraries that way on Linux for wasm32-wasi if crate-type is cdylib. 
-	@# If crate-type is bin, it's just <name>.wasm. We assume library/cdylib.
 
-# 4. Build Host
-build-host:
-	@echo "Building Host..."
-	cargo build -p host
-
-# 5. Run Modes
-run-secure: all
-	@echo "Running Secure Mode..."
-	cargo run -p host -- --mode secure
-
-run-leak: all
-	@echo "Running Leaky Agent Mode..."
-	cargo run -p host -- --mode leak
-
-# 6. Test Suite
-test: components
-	@echo "Running Security Test Suite..."
-	cargo test -p host
+# Run via pypes
+run: components
+	@echo "Run via Pypes:"
+	@echo "  pypes run secure.toml"
 
 # Clean
 clean:
@@ -71,3 +54,4 @@ check-tools:
 	@echo "Checking requirements..."
 	@which wasm-tools > /dev/null || echo "Error: wasm-tools not found!"
 	@which cargo > /dev/null || echo "Error: cargo not found!"
+

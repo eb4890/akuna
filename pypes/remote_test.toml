@@ -1,0 +1,8 @@
+# Test blueprint for Registry POC
+[components]
+matcher = "../calendar_privacy_poc/components/matcher.wasm"
+# Test remote component (will be served by local test server)
+test_remote = "remote://localhost:8080/test-skill@1.0.0"
+
+[wiring]
+# No wiring needed for this test

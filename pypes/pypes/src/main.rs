@@ -1,11 +1,21 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use clap::Parser;
-use pypes_analyser::{verify, Blueprint};
+use pypes_analyser::{Blueprint, Connection, verify};
 use std::fs;
 use std::path::PathBuf;
-use std::collections::{HashMap, HashSet};
-use wasmtime::{Config, Engine, Store, component::{Component, Linker, ResourceTable}};
+use std::collections::HashMap;
+use std::sync::Arc;
+use wasmtime::{Config, Engine, Store, component::{Component, Linker, ResourceTable, Val}};
 use wasmtime_wasi::preview2::{WasiCtx, WasiCtxBuilder, WasiView};
+
+mod fetcher;
+mod workflow;
+mod wit_loader;
+mod middleware;
+
+use fetcher::ComponentFetcher;
+use wit_loader::WitLoader;
+use std::path::Path;
 
 #[derive(Parser)]
 #[clap(author, version, about)]
@@ -40,13 +50,6 @@ impl WasiView for HostState {
     fn table(&mut self) -> &mut ResourceTable { &mut self.table }
     fn ctx(&mut self) -> &mut WasiCtx { &mut self.ctx }
 }
-
-// Generate types from WIT
-wasmtime::component::bindgen!({
-    path: "../../calendar_privacy_poc/wit/calendar.wit",
-    world: "capabilities",
-    async: true
-});
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -97,20 +100,53 @@ async fn main() -> Result<()> {
     let mut components = HashMap::new();
     let base_dir = args.config.parent().unwrap_or(&std::path::Path::new("."));
     
+    // Initialize fetcher for remote components
+    // Initialize fetcher for remote components
+    let fetcher = ComponentFetcher::new()?;
+    let mut wit_loaders: HashMap<String, WitLoader> = HashMap::new();
+    
     for (name, rel_path) in &blueprint.components {
-        let path = base_dir.join(rel_path);
+        let path = if rel_path.starts_with("remote://") {
+            // Fetch from remote registry
+            fetcher.fetch(rel_path).await?
+        } else {
+            // Local file
+            base_dir.join(rel_path)
+        };
+        
         println!(" - Loading component '{}' from {:?}", name, path);
         let component = Component::from_file(&engine, &path)
             .with_context(|| format!("Failed to load component {}", name))?;
         components.insert(name.clone(), component);
+        
+        // Try to load WIT
+        let wit_path = path.with_extension("wit");
+        let loader = if wit_path.exists() {
+            Some(WitLoader::load(&wit_path)?)
+        } else {
+             // Check for interface.wit in parent dir (cache structure)
+             let interface_wit = path.parent().unwrap_or(Path::new(".")).join("interface.wit");
+             if interface_wit.exists() {
+                 Some(WitLoader::load(&interface_wit)?)
+             } else {
+                 println!("   ⚠️  No WIT file found for '{}'. Dynamic wiring might be limited.", name);
+                 None
+             }
+        };
+        
+        if let Some(l) = loader {
+            wit_loaders.insert(name.clone(), l);
+        }
     }
-    
+
     let mut instances = HashMap::new();
     let component_names: Vec<String> = components.keys().cloned().collect();
     let mut pending = component_names.clone();
     
-    let mut wiring_map: HashMap<String, Vec<(String, String)>> = HashMap::new();
-    for (consumer_key, provider_key) in &blueprint.wiring {
+    // ProviderName -> List of (ExportName, LinkerName, ConnectionConfig)
+    let mut wiring_map: HashMap<String, Vec<(String, String, Connection)>> = HashMap::new();
+    for (consumer_key, connection) in &blueprint.wiring {
+        let provider_key = connection.provider();
         let p_parts: Vec<&str> = provider_key.splitn(2, '.').collect();
         if p_parts.len() < 2 { continue; }
         if p_parts[0] == "host" { continue; }
@@ -120,14 +156,17 @@ async fn main() -> Result<()> {
         let c_parts: Vec<&str> = consumer_key.splitn(2, '.').collect();
         let import = if c_parts.len() == 2 { c_parts[1].to_string() } else { consumer_key.clone() };
         
-        wiring_map.entry(provider).or_default().push((export, import));
+        wiring_map.entry(provider).or_default().push((export, import, connection.clone()));
     }
     
+    /*
     for list in wiring_map.values_mut() {
-        list.sort();
+        list.sort(); // Can't easily sort with Connection struct
         list.dedup();
     }
+    */
 
+    // Dynamic Wiring Loop
     let mut made_progress = true;
     while !pending.is_empty() && made_progress {
         made_progress = false;
@@ -136,7 +175,9 @@ async fn main() -> Result<()> {
         for name in &pending {
             let comp = components.get(name).unwrap();
             
+            // Try to instantiate
             println!("   Trying to instantiate '{}'...", name);
+            
             match linker.instantiate_async(&mut store, comp).await {
                 Ok(instance) => {
                     println!("   ✅ Instantiated '{}'", name);
@@ -144,94 +185,175 @@ async fn main() -> Result<()> {
                     made_progress = true;
                     
                     if let Some(wires) = wiring_map.get(name) {
-                        for (export_name, linker_name) in wires {
+                        let mut seen_wires = std::collections::HashSet::new();
+                        for (export_name, linker_name, connection_config) in wires {
+                            if !seen_wires.insert((export_name, linker_name)) {
+                                continue;
+                            }
+                            println!("      -> Wiring export '{}' to linker name '{}'", export_name, linker_name);
                             
-                            // Use Generated Types (at root level)
-                            use local::calendar_privacy::calendar_api::{TimeWindow, CalendarEvent};
-                            use local::calendar_privacy::search_api::SearchResult;
-                            // UserState from LLM API (remapped from Calendar API)
-                            use local::calendar_privacy::llm_api::UserState;
+                            // 1. Discover exported functions via WitLoader
+                            // Need to know function names to proxy.
+                            let func_names = if let Some(loader) = wit_loaders.get(name) {
+                                match loader.get_interface_exports(export_name) {
+                                    Ok(names) => names,
+                                    Err(_) => vec![], // Not an interface or not found
+                                }
+                            } else {
+                                vec![]
+                            };
                             
-                            if export_name.contains("calendar-api") {
-                                let get_free_slots = {
-                                    let mut exports = instance.exports(&mut store);
-                                    let mut api = exports.instance(export_name); 
-                                    if let Some(mut a) = api { a.func("get-free-slots") } else { None }
-                                };
+                            if !func_names.is_empty() {
+                                // It is an Interface instance (e.g. `calendar-api`)
+                                let mut instance_linker = linker.instance(linker_name)?;
                                 
-                                let mut instance_linker = linker.instance(linker_name)?;
-
-                                if let Some(func) = get_free_slots {
-                                     println!("      -> Wiring 'get-free-slots' to '{}'", linker_name);
-                                     instance_linker.func_wrap_async("get-free-slots", move |mut ctx, ()| {
-                                         let func = func;
-                                         Box::new(async move {
-                                             let res = func.typed::<(), (Vec<TimeWindow>,)>(&ctx).unwrap().call_async(ctx, ()).await?;
-                                             Ok((res.0,))
-                                         })
-                                     })?;
+                                // Find all "Surrogate" components that IMPORT this interface to use for type validation.
+                                let mut potential_surrogates = Vec::new();
+                                for (c_key, _) in &blueprint.wiring {
+                                     // Check if consumer uses this linker name
+                                     if c_key.ends_with(linker_name) || c_key.contains(linker_name) {
+                                          let c_name = c_key.split('.').next().unwrap();
+                                          if let Some(comp) = components.get(c_name) {
+                                              potential_surrogates.push((c_name.to_string(), comp));
+                                          }
+                                     }
                                 }
+                                // Sort surrogates: Prefer "orchestrator" to resolve type mismatches in critical path
+                                potential_surrogates.sort_by(|(a, _), (b, _)| {
+                                    if a.contains("orchestrator") { std::cmp::Ordering::Less }
+                                    else if b.contains("orchestrator") { std::cmp::Ordering::Greater }
+                                    else { a.cmp(b) }
+                                });
                                 
-                                instance_linker.func_wrap("get-events-sensitive", move |_ctx, ()| -> Result<(Vec<CalendarEvent>,)> {
-                                     Ok((Vec::new(),))
-                                })?;
+                                if !potential_surrogates.is_empty() {
+                                    for func_name in func_names {
+                                         // Get the runtime export from provider instance
+                                         let mut exports = instance.exports(&mut store);
+                                         if let Some(mut exported_instance) = exports.instance(export_name) {
+                                             if let Some(provider_func) = exported_instance.func(&func_name) {
+                                                  // Middleware Integration
+                                                  // 1. Parse connection config to get active middlewares
+                                                  let active_middlewares: Vec<String> = match connection_config {
+                                                      pypes_analyser::Connection::Configured { middleware, .. } => middleware.clone(),
+                                                      pypes_analyser::Connection::Simple(_) => vec![],
+                                                  };
 
-                            } else if export_name.contains("search-api") {
-                                let search_func = {
-                                    let mut exports = instance.exports(&mut store);
-                                    let mut api = exports.instance(export_name);
-                                    if let Some(mut a) = api { a.func("search") } else { None }
-                                };
+                                                  let mut chain: Vec<Arc<dyn middleware::Middleware>> = Vec::new();
+                                                  for mw_name in active_middlewares {
+                                                      if let Some(mw) = middleware::get_middleware_by_name(&mw_name) {
+                                                          chain.push(mw);
+                                                      } else {
+                                                          println!("         ⚠️  Unknown middleware '{}' requested for linkage.", mw_name);
+                                                      }
+                                                  }
+                                                  let chain = Arc::new(chain);
 
-                                let mut instance_linker = linker.instance(linker_name)?;
+                                                  // Try surrogates until one works
+                                                  let mut proxied = false;
+                                                  for (s_name, surrogate_comp) in &potential_surrogates {
+                                                      let chain_clone = chain.clone();
 
-                                if let Some(func) = search_func {
-                                     println!("      -> Wiring 'search' to '{}'", linker_name);
-                                     instance_linker.func_wrap_async("search", move |mut ctx, (q,): (String,)| {
-                                         let func = func;
-                                         Box::new(async move {
-                                             let res = func.typed::<(String,), (Vec<SearchResult>,)>(&ctx).unwrap().call_async(ctx, (q,)).await?;
-                                             Ok((res.0,))
-                                         })
-                                     })?;
+                                                  // Define the proxy in the linker
+                                                  let store_target = linker_name.to_string();
+                                                  let s_name_debug = s_name.clone();
+                                                  let func_name_debug = func_name.clone();
+
+                                                  let res = instance_linker.func_new_async(
+                                                      surrogate_comp, 
+                                                      &func_name, 
+                                                      move |mut ctx, args, results| {
+                                                          let provider_func = provider_func;
+                                                          let chain = chain_clone.clone();
+                                                          let target = store_target.clone();
+                                                          let fname = func_name_debug.clone();
+                                                          // let Caller = s_name_debug.clone(); // Unused
+
+                                                          Box::new(async move {
+                                                              
+                                                              for mw in &*chain {
+                                                                  // Hack: We only support "Passive" middleware for now (Logging, Guard).
+                                                                  // We don't support "Transforming" middleware that calls `next`.
+                                                                  // Because of `ctx` ownership.
+                                                                  // We'll call a simplified method `on_call`.
+                                                                  
+                                                                  // To fix this proper: modify Middleware trait?
+                                                                  // Let's assume we modify `src/middleware.rs` to have `pre_call` and `post_call`.
+                                                                  
+                                                                  // Let's use the simpler inline logic for the POC to unblock.
+                                                                   if let Some(_logger) = mw.as_any().downcast_ref::<middleware::LoggingMiddleware>() {
+                                                                       println!("[Middleware] Call -> {}::{} Inputs: {:?}", target, fname, args);
+                                                                  }
+                                                              }
+                                                              
+                                                              // Actual Call
+                                                              let start = std::time::Instant::now();
+                                                              let res = provider_func.call_async(&mut ctx, args, results).await;
+                                                              
+                                                              for mw in &*chain {
+                                                                   if let Some(_logger) = mw.as_any().downcast_ref::<middleware::LoggingMiddleware>() {
+                                                                       match &res {
+                                                                           Ok(_) => println!("[Middleware] Return <- {}::{} ({}ms) Outputs: {:?}", target, fname, start.elapsed().as_millis(), results),
+                                                                           Err(e) => println!("[Middleware] Error <- {}::{} Error: {:?}", target, fname, e),
+                                                                       }
+                                                                   }
+                                                              }
+                                                              
+                                                              res
+                                                          })
+                                                      }
+                                                  );
+                                                  
+                                                  match res {
+                                                      Ok(_) => {
+                                                          proxied = true;
+                                                          break; // Success
+                                                      },
+                                                      Err(e) => {
+                                                          let msg = format!("{:?}", e);
+                                                          if msg.contains("import") && msg.contains("not found") {
+                                                              continue;
+                                                          } else {
+                                                              println!("         ⚠️  Error proxying '{}' using surrogate '{}': {}", func_name, s_name, msg);
+                                                                     }
+                                                  }
+                                              }
+                                          }
+                                          
+                                          if !proxied {
+                                               println!("         ⚠️  Failed to proxy function '{}'. No suitable consumer component found with this import.", func_name);
+                                          }
+                                             } else {
+                                                  println!("         ⚠️  Function '{}' in WIT but not in instance?", func_name);
+                                             }
+                                         } else {
+                                              println!("         ⚠️  Instance Export '{}' not found although WIT implies it.", export_name);
+                                         }
+                                    }
+                                } else {
+                                    println!("         ⚠️  Could not find ANY consumer component for '{}' to use as type surrogate.", linker_name);
                                 }
-
-                            } else if export_name.contains("llm-api") {
-                                let (predict, complete) = {
-                                    let mut exports = instance.exports(&mut store);
-                                    let mut api = exports.instance(export_name);
-                                    if let Some(mut a) = api { (a.func("predict-state"), a.func("completion")) } else { (None, None) }
-                                };
-
-                                let mut instance_linker = linker.instance(linker_name)?;
-
-                                if let Some(func) = predict {
-                                     println!("      -> Wiring 'predict-state' to '{}'", linker_name);
-                                     instance_linker.func_wrap_async("predict-state", move |mut ctx, (c,): (String,)| {
-                                         let func = func;
-                                         Box::new(async move {
-                                             let res = func.typed::<(String,), (UserState,)>(&ctx).unwrap().call_async(ctx, (c,)).await?;
-                                             Ok((res.0,))
-                                         })
-                                     })?;
-                                }
-                                if let Some(func) = complete {
-                                     println!("      -> Wiring 'completion' to '{}'", linker_name);
-                                     instance_linker.func_wrap_async("completion", move |mut ctx, (p,): (String,)| {
-                                         let func = func;
-                                         Box::new(async move {
-                                             let res = func.typed::<(String,), (String,)>(&ctx).unwrap().call_async(ctx, (p,)).await?;
-                                             Ok((res.0,))
-                                         })
-                                     })?;
+                            } else {
+                                // Fallback for Root Functions or Missing WIT
+                                let mut exports = instance.exports(&mut store);
+                                if let Some(_) = exports.root().func(export_name) {
+                                     println!("         (Root function wiring / fallback to one-to-one not fully implemented yet: {})", export_name);
+                                } else {
+                                    // If we failed WIT lookup and it's not a root func, we can't wire an empty list.
+                                    println!("         ⚠️  Export '{}' could not be resolved via WIT or Root exports.", export_name);
                                 }
                             }
                         }
                     }
                 },
                 Err(e) => {
-                    if !made_progress {
-                         println!("   ⚠️  Failed to instantiate '{}': {:?}", name, e);
+                    // Start of error message
+                    let msg = format!("{:?}", e);
+                    // Checking for "import not defined" to differentiate actual failure vs pending dependency
+                    if msg.contains("not defined") {
+                         // Likely waiting for dependency
+                    } else {
+                         // Real error?
+                          println!("   ⚠️  Instantiation error: {}", msg);
                     }
                     next_pending.push(name.clone());
                 }
@@ -244,6 +366,11 @@ async fn main() -> Result<()> {
          println!("(Warning: Some components pending: {:?})", pending);
     }
     
+    if let Some(workflow) = &blueprint.workflow {
+        workflow::execute(&mut store, &instances, workflow).await?;
+        return Ok(());
+    }
+
     let entrypoint = args.entrypoint.unwrap_or("orchestrator".to_string());
     if let Some(instance) = instances.get(&entrypoint) {
         println!("🚀 Running entrypoint '{}'...", entrypoint);

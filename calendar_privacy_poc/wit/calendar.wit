@@ -66,24 +66,6 @@ world web-searcher-world {
     export search-api;
 }
 
-world context-analyzer-world {
-    use calendar-api.{user-state, time-window};
-    import llm-api;
-    // Context analyzer receives structured time windows, returns typed state
-    export analyze: func(schedule: list<time-window>) -> user-state;
-}
-
-world matcher-world {
-    use calendar-api.{time-window};
-    use search-api.{search-result};
-    
-    // Matcher now takes typed inputs
-    export reconcile: func(
-        slots: list<time-window>, 
-        events: list<search-result>
-    ) -> list<search-result>; 
-}
-
 world leaky-agent-world {
     import calendar-api;
     import search-api;
@@ -91,16 +73,6 @@ world leaky-agent-world {
     export run-agent: func(prompt: string) -> string;
 }
 
-world orchestrator-world {
-    import calendar-api;
-    import search-api;
-    import llm-api; 
-    // We import the generic APIs. The host will link these imports to the SPECIFIC components (CalendarReader, etc.)
-    
-    export run: func() -> string;
-}
-
 world llm-provider-world {
     export llm-api;
 }
-

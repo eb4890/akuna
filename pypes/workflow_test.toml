@@ -1,0 +1,21 @@
+[components]
+calendar = "../calendar_privacy_poc/components/calendar_reader.wasm"
+llm = "../calendar_privacy_poc/components/llm_provider.wasm"
+
+[workflow]
+[[workflow.steps]]
+id = "get_schedule"
+component = "calendar"
+function = "get-free-slots"
+
+[[workflow.steps]]
+id = "analyze"
+component = "llm"
+function = "predict-state"
+input = "Context: {{ get_schedule.output }}"
+
+[[workflow.steps]]
+id = "respond"
+component = "llm"
+function = "completion"
+input = "Based on {{ analyze.output }}, suggest a time."

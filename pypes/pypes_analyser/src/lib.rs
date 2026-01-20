@@ -6,7 +6,44 @@ use std::collections::{HashMap, HashSet};
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Blueprint {
     pub components: HashMap<String, String>,
-    pub wiring: HashMap<String, String>,
+    #[serde(default)]
+    pub wiring: HashMap<String, Connection>,
+    #[serde(default)]
+    pub workflow: Option<Workflow>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(untagged)]
+pub enum Connection {
+    Simple(String), // "provider.export"
+    Configured {
+        provider: String,
+        #[serde(default)]
+        middleware: Vec<String>,
+    },
+}
+
+impl Connection {
+    pub fn provider(&self) -> &str {
+        match self {
+            Connection::Simple(s) => s,
+            Connection::Configured { provider, .. } => provider,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct Workflow {
+    pub steps: Vec<WorkflowStep>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct WorkflowStep {
+    pub id: String,
+    pub component: String,
+    pub function: String,
+    #[serde(default)]
+    pub input: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -53,8 +90,10 @@ pub fn verify(blueprint: &Blueprint) -> Result<(), Vec<SafetyViolation>> {
 
     // Add edges from wiring
     // wiring: "consumer.import" = "provider.export"
-    for (consumer_key, provider_key) in &blueprint.wiring {
+    // wiring: "consumer.import" = "provider.export" OR { provider = "...", ... }
+    for (consumer_key, connection) in &blueprint.wiring {
         let consumer_name = consumer_key.split('.').next().unwrap_or(consumer_key);
+        let provider_key = connection.provider();
         let provider_name = provider_key.split('.').next().unwrap_or(provider_key);
 
         if let (Some(&c_idx), Some(&p_idx)) = (node_map.get(consumer_name), node_map.get(provider_name)) {
@@ -87,12 +126,12 @@ pub fn verify(blueprint: &Blueprint) -> Result<(), Vec<SafetyViolation>> {
     // We'll mark 'host' as safe, but interfaces from host might be dangerous.
 
     // 3. Analyze Wiring to seed capabilities
-    for (consumer_key, provider_key) in &blueprint.wiring {
+    for (consumer_key, connection) in &blueprint.wiring {
         let consumer_name = consumer_key.split('.').next().unwrap();
         // provider could be "host" or another component
         // let provider_name = provider_key.split('.').next().unwrap();
 
-        let caps = infer_capabilities(provider_key);
+        let caps = infer_capabilities(connection.provider());
         
         if let Some(set) = component_caps.get_mut(consumer_name) {
             for cap in caps {

@@ -1,12 +1,8 @@
 [workspace]
 members = [
-    "host",
     "modules/calendar_reader",
     "modules/web_searcher",
-    "modules/context_analyzer",
-    "modules/matcher",
     "modules/leaky_agent",
-    "modules/orchestrator",
     "modules/llm_provider",
 ]
 resolver = "2"

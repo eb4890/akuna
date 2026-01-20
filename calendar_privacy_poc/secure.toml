@@ -1,26 +1,31 @@
 [components]
 calendar_reader = "components/calendar_reader.wasm"
 web_searcher = "components/web_searcher.wasm"
-context_analyzer = "components/context_analyzer.wasm"
-matcher = "components/matcher.wasm"
-orchestrator = "components/orchestrator.wasm"
 llm_provider = "components/llm_provider.wasm"
+# Removed orchestrator, context_analyzer, matcher as they are replaced by the workflow logic
 
 [wiring]
-# Orchestrator Dependencies
-"orchestrator.local:calendar-privacy/calendar-api" = "calendar_reader.local:calendar-privacy/calendar-api"
-"orchestrator.local:calendar-privacy/search-api" = "web_searcher.local:calendar-privacy/search-api"
-"orchestrator.local:calendar-privacy/llm-api" = "llm_provider.local:calendar-privacy/llm-api"
-
 # Calendar Reader Access
 "calendar_reader.wasi:filesystem/types" = "host.wasi:filesystem/types"
 
 # Web Searcher Access
 "web_searcher.wasi:http/outgoing-handler" = "host.wasi:http/outgoing-handler"
 
-# Analyzer Access
-"context_analyzer.local:calendar-privacy/llm-api" = "llm_provider.local:calendar-privacy/llm-api"
 
-# Note: In the POC simulation, the "Wiring" is actually data flow in the host main loop.
-# But for Pypes analysis, we declare the *capabilities* each component *receives*.
-# The safe design is that NO COMPONENT receives both "filesystem" AND "http".
+[[workflow.steps]]
+id = "get_slots"
+component = "calendar_reader"
+function = "local:calendar-privacy/calendar-api.get-free-slots"
+# No input needed
+
+[[workflow.steps]]
+id = "analyze_state"
+component = "llm_provider"
+function = "local:calendar-privacy/llm-api.predict-state"
+input = "Analyze this schedule and determine my state: {{ get_slots.output }}"
+
+[[workflow.steps]]
+id = "search_events"
+component = "web_searcher"
+function = "local:calendar-privacy/search-api.search"
+input = "fun events for {{ analyze_state.output }} person"

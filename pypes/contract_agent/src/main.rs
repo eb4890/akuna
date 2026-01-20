@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use pypes_analyser::{verify, Blueprint, SafetyViolation};
+use pypes_analyser::{verify, Blueprint};
 use std::collections::HashMap;
 
 #[derive(Parser)]
@@ -102,5 +102,6 @@ fn generate_blueprint_from_prompt(prompt: &str) -> Blueprint {
     Blueprint {
         components,
         wiring,
+        workflow: None,
     }
 }

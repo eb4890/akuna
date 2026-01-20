@@ -1,0 +1,10 @@
+[package]
+name = "test-skill"
+version = "1.0.0"
+registry = "localhost:8080"
+
+[checksums]
+component = "sha256:23b8017af3b59b31d90903fa72a67c0337afc128db59cd68b0b2c5c938563350"
+
+[permissions]
+capabilities = []
